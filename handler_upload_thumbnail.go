@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -32,7 +34,6 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
 	const maxMemory = 10 << 20 // 10 MB
 
 	r.ParseMultipartForm(maxMemory)
@@ -43,16 +44,34 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	mediaType := fileHeaders.Header.Get("Content-Type")
+	contentType := fileHeaders.Header.Get("Content-Type")
+	parts := strings.Split(contentType, "/")
 
-	thumbnailData, err := io.ReadAll(fileData)
-	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Unable to read thumbnail data", err)
+	if len(parts) != 2 {
+		respondWithError(w, http.StatusBadRequest, "Invalid content type", nil)
 		return
-
 	}
 
-	dataUrl := fmt.Sprintf("data:%v;base64,%v", mediaType, base64.StdEncoding.EncodeToString(thumbnailData))
+	mediaType := parts[0]
+	mediaExtension := parts[1]
+
+	if mediaType != "image" || (mediaExtension != "jpeg" && mediaExtension != "png") {
+		respondWithError(w, http.StatusBadRequest, "Thumbnail must be a JPEG or PNG image", nil)
+		return
+	}
+
+	filename := fmt.Sprintf("%v.%v", videoIDString, mediaExtension)
+	filePath := filepath.Join(cfg.assetsRoot, filename)
+	file, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error creating a file", err)
+		return
+	}
+	_, err = io.Copy(file, fileData)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error saving a file", err)
+		return
+	}
 
 	videoMetadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
@@ -67,6 +86,9 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		respondWithError(w, http.StatusForbidden, "You don't have permission to modify this video", nil)
 		return
 	}
+
+	dataUrl := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, videoMetadata.ID, mediaExtension)
+
 	videoMetadata.ThumbnailURL = &dataUrl
 	err = cfg.db.UpdateVideo(videoMetadata)
 	if err != nil {
