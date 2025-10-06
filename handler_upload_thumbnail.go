@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,18 +34,37 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
+	// ⭐ 1. NAJPIERW sprawdź uprawnienia (przed zapisywaniem pliku!)
+	videoMetadata, err := cfg.db.GetVideo(videoID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve video", err)
+		return
+	}
+	if videoMetadata.ID == uuid.Nil {
+		respondWithError(w, http.StatusNotFound, "Video not found", nil)
+		return
+	}
+	if videoMetadata.UserID != userID {
+		respondWithError(w, http.StatusForbidden, "You don't have permission to modify this video", nil)
+		return
+	}
 
-	const maxMemory = 10 << 20 // 10 MB
-
-	r.ParseMultipartForm(maxMemory)
+	// ⭐ 2. Teraz parsuj formularz
+	const maxMemory = 10 << 20            // 10 MB
+	err = r.ParseMultipartForm(maxMemory) // ⭐ Sprawdź błąd!
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Unable to parse form data", err)
+		return
+	}
 
 	fileData, fileHeaders, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "No thumbnail file provided", err)
 		return
 	}
+	defer fileData.Close()
 
+	// ⭐ 3. Walidacja Content-Type
 	contentType := fileHeaders.Header.Get("Content-Type")
 	parts := strings.Split(contentType, "/")
 
@@ -60,39 +81,40 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	filename := fmt.Sprintf("%v.%v", videoIDString, mediaExtension)
+	// ⭐ 4. Generuj losową nazwę
+	randomBytes := make([]byte, 32)
+	_, err = rand.Read(randomBytes)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error creating random filename", err)
+		return
+	}
+	randomFilename := base64.RawURLEncoding.EncodeToString(randomBytes)
+
+	filename := fmt.Sprintf("%s.%s", randomFilename, mediaExtension)
 	filePath := filepath.Join(cfg.assetsRoot, filename)
+
+	// ⭐ 5. Zapisz plik
 	file, err := os.Create(filePath)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error creating a file", err)
 		return
 	}
+	defer file.Close() // ⭐ WAŻNE!
+
 	_, err = io.Copy(file, fileData)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Error saving a file", err)
 		return
 	}
 
-	videoMetadata, err := cfg.db.GetVideo(videoID)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve video", err)
-		return
-	}
-	if videoMetadata.ID == uuid.Nil {
-		respondWithError(w, http.StatusNotFound, "Video not found", nil)
-		return
-	}
-	if videoMetadata.UserID != userID {
-		respondWithError(w, http.StatusForbidden, "You don't have permission to modify this video", nil)
-		return
-	}
-
-	dataUrl := fmt.Sprintf("http://localhost:%v/assets/%v.%v", cfg.port, videoMetadata.ID, mediaExtension)
-
+	// ⭐ 6. Zaktualizuj URL (używaj filename, nie videoID!)
+	dataUrl := fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, filename)
 	videoMetadata.ThumbnailURL = &dataUrl
+
 	err = cfg.db.UpdateVideo(videoMetadata)
 	if err != nil {
-		respondWithError(w, 500, "Failed to update video metadata", err)
+		respondWithError(w, http.StatusInternalServerError, "Failed to update video metadata", err)
+		return // ⭐ WAŻNE!
 	}
 
 	respondWithJSON(w, http.StatusOK, videoMetadata)
