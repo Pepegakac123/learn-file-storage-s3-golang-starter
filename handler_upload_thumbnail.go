@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -38,38 +39,38 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fileData, fileHeaders, err := r.FormFile("thumbnail")
 	if err != nil {
-		respondWithError(w, 500, "Couldn't get a fileData", err)
+		respondWithError(w, http.StatusBadRequest, "No thumbnail file provided", err)
+		return
 	}
 
 	mediaType := fileHeaders.Header.Get("Content-Type")
 
 	thumbnailData, err := io.ReadAll(fileData)
 	if err != nil {
-		respondWithError(w, 500, "Couldn't get a data of the image", err)
+		respondWithError(w, http.StatusBadRequest, "Unable to read thumbnail data", err)
+		return
 
 	}
+
+	dataUrl := fmt.Sprintf("data:%v;base64,%v", mediaType, base64.StdEncoding.EncodeToString(thumbnailData))
 
 	videoMetadata, err := cfg.db.GetVideo(videoID)
 	if err != nil {
-		respondWithError(w, 500, "Error of the getting videoMetadata from the database", err)
-
+		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve video", err)
+		return
+	}
+	if videoMetadata.ID == uuid.Nil {
+		respondWithError(w, http.StatusNotFound, "Video not found", nil)
+		return
 	}
 	if videoMetadata.UserID != userID {
-		respondWithError(w, http.StatusUnauthorized, "The video is not the user property", err)
+		respondWithError(w, http.StatusForbidden, "You don't have permission to modify this video", nil)
+		return
 	}
-	thb := thumbnail{
-		data:      thumbnailData,
-		mediaType: mediaType,
-	}
-
-	videoThumbnails[videoMetadata.ID] = thb
-
-	newThbUrl := fmt.Sprintf("http://localhost:%v/api/thumbnails/%v", cfg.port, videoMetadata.ID)
-
-	videoMetadata.ThumbnailURL = &newThbUrl
+	videoMetadata.ThumbnailURL = &dataUrl
 	err = cfg.db.UpdateVideo(videoMetadata)
 	if err != nil {
-		respondWithError(w, 500, "There was an error while updating the video in the database", err)
+		respondWithError(w, 500, "Failed to update video metadata", err)
 	}
 
 	respondWithJSON(w, http.StatusOK, videoMetadata)
