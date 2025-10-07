@@ -144,7 +144,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	s3VideoUrl := fmt.Sprintf("%v/%v", cfg.s3CfDistribution, filename)
+	s3VideoUrl := fmt.Sprintf("https://%v/%v", cfg.s3CfDistribution, filename)
 	videoMetadata.VideoURL = &s3VideoUrl
 	err = cfg.db.UpdateVideo(videoMetadata)
 	if err != nil {
